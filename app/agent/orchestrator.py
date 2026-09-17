@@ -62,25 +62,40 @@ class Agent:
         return [types.Tool(function_declarations=declarations)]
 
     async def _open_stream(self, contents: list[types.Content], config: types.GenerateContentConfig):
-        """Start the model stream, retrying transient overload/rate-limit errors.
+        """Yield model chunks, retrying transient overload/rate-limit errors.
 
-        503s and 429s are common and usually clear within seconds. Retrying here
-        is safe because the request fails before any tokens reach the client.
+        503s and 429s are common and usually clear within seconds. The SDK
+        defers the HTTP request until the stream is first iterated, so the
+        error surfaces there and not from the call itself — retrying around
+        the call alone never fires. Pull the first chunk inside the retry
+        instead. That is still safe: nothing has reached the client yet.
+        Once tokens are flowing a failure propagates, since replaying would
+        duplicate text the user has already seen.
         """
         delay = 1.0
         for attempt in range(MAX_RETRIES):
             try:
-                return await self._client.aio.models.generate_content_stream(
+                stream = await self._client.aio.models.generate_content_stream(
                     model=self._model,
                     contents=contents,
                     config=config,
                 )
+                iterator = stream.__aiter__()
+                first = await iterator.__anext__()
+            except StopAsyncIteration:
+                return
             except genai_errors.APIError as exc:
                 if exc.code not in (429, 503) or attempt == MAX_RETRIES - 1:
                     raise
                 logger.warning("Gemini %s, retrying in %.0fs", exc.code, delay)
                 await asyncio.sleep(delay)
                 delay *= 2
+                continue
+
+            yield first
+            async for chunk in iterator:
+                yield chunk
+            return
 
     async def run_stream(self, messages: list[dict[str, Any]]) -> AsyncGenerator[dict, None]:
         """`messages` is [{"role": "user"|"assistant", "content": "..."}].
@@ -115,8 +130,7 @@ class Agent:
                 received_parts: list[types.Part] = []
                 function_call_parts: list[types.Part] = []
 
-                stream = await self._open_stream(contents, config)
-                async for chunk in stream:
+                async for chunk in self._open_stream(contents, config):
                     if not chunk.candidates:
                         continue
                     parts = chunk.candidates[0].content.parts or []
