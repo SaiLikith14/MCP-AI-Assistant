@@ -18,4 +18,6 @@ COPY . .
 RUN mkdir -p /app/data
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Shell form so $PORT (supplied by Render and most PaaS) expands; 8000 locally.
+# exec replaces the shell so uvicorn receives SIGTERM directly on shutdown.
+CMD exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}

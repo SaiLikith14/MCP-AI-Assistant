@@ -11,6 +11,11 @@ from app.db.session import init_db
 from app.mcp.manager import MCPManager
 
 logging.basicConfig(level=logging.INFO)
+# httpx logs full request URLs at INFO. The Tavily MCP endpoint carries its API key
+# in the query string, so leaving this at INFO writes that key into the log store on
+# every request. Warnings and errors still come through.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("mcp.client.streamable_http").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
